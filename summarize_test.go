@@ -33,24 +33,27 @@ func (rp *reporter) ObjectRead(from, to, total int) {
 		log.Printf(`%d percent done (%d/%d)`, percent, to, total)
 	}
 }
+func (rp *reporter) Summarized(done, total int) {
+	percent := 100 * done / total
+	log.Printf(`%d percent done (%d/%d)`, percent, done, total)
+}
 
-func TestSummaryLeaves(t *testing.T) {
+func TestSummaryScalars(t *testing.T) {
 	tests := []struct {
 		name        string
-		values      []*Leaf
+		node        *Node
 		bucketCount int
 		topCount    int
-		want        *SummaryLeaf
+		want        *SummaryNode
 	}{
 		{
 			name: "all numbers",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(1.1)}},
+			node: &Node{
+				ScalarNumbers: []float64{1.0, 1.1},
 			},
 			bucketCount: 2,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    2,
 					AllInts: false,
 					Min:     1,
@@ -66,14 +69,12 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "all ints",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
+			node: &Node{
+				ScalarNumbers: []float64{1.0, 2.0, 2.0},
 			},
 			bucketCount: 2,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    3,
 					AllInts: true,
 					Min:     1,
@@ -88,12 +89,12 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "one int",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(2.0)}},
+			node: &Node{
+				ScalarNumbers: []float64{2.0},
 			},
 			bucketCount: 2,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    1,
 					AllInts: true,
 					Min:     2,
@@ -107,12 +108,12 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "one number",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(2.43)}},
+			node: &Node{
+				ScalarNumbers: []float64{2.43},
 			},
 			bucketCount: 2,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    1,
 					AllInts: false,
 					Min:     2.43,
@@ -126,20 +127,20 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "larger dist",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(3.0)}},
-				{Value: &TypeValue{Number: p(4.0)}},
-				{Value: &TypeValue{Number: p(5.0)}},
-				{Value: &TypeValue{Number: p(6.0)}},
-				{Value: &TypeValue{Number: p(7.0)}},
-				{Value: &TypeValue{Number: p(8.0)}},
-				{Value: &TypeValue{Number: p(9.0)}},
-			},
+			node: &Node{ScalarNumbers: []float64{
+				1.0,
+				2.0,
+				3.0,
+				4.0,
+				5.0,
+				6.0,
+				7.0,
+				8.0,
+				9.0,
+			}},
 			bucketCount: 3,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    9,
 					AllInts: true,
 					Min:     1.0,
@@ -155,20 +156,20 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "skewed dist",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(3.0)}},
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(3.0)}},
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(9.0)}},
-			},
+			node: &Node{ScalarNumbers: []float64{
+				1.0,
+				2.0,
+				3.0,
+				1.0,
+				2.0,
+				3.0,
+				1.0,
+				2.0,
+				9.0,
+			}},
 			bucketCount: 10,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    9,
 					AllInts: true,
 					Min:     1.0,
@@ -185,20 +186,20 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "skewed dist - few buckets",
-			values: []*Leaf{
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(3.0)}},
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(3.0)}},
-				{Value: &TypeValue{Number: p(1.0)}},
-				{Value: &TypeValue{Number: p(2.0)}},
-				{Value: &TypeValue{Number: p(9.0)}},
-			},
+			node: &Node{ScalarNumbers: []float64{
+				1.0,
+				2.0,
+				3.0,
+				1.0,
+				2.0,
+				3.0,
+				1.0,
+				2.0,
+				9.0,
+			}},
 			bucketCount: 2,
-			want: &SummaryLeaf{
-				Numbers: &NumberSummaryLeaf{
+			want: &SummaryNode{
+				Numbers: &NumberSummaryNode{
 					Freq:    9,
 					AllInts: true,
 					Min:     1.0,
@@ -213,12 +214,12 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "one string",
-			values: []*Leaf{
-				{Value: &TypeValue{String: p("hello")}},
-			},
+			node: &Node{ScalarStrings: []string{
+				"hello",
+			}},
 			topCount: 5,
-			want: &SummaryLeaf{
-				Strings: &StringSummaryLeaf{
+			want: &SummaryNode{
+				Strings: &StringSummaryNode{
 					Freq:   1,
 					Unique: 1,
 					MinLen: len("hello"),
@@ -234,19 +235,19 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "less than top strings",
-			values: []*Leaf{
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("world")}},
-				{Value: &TypeValue{String: p("world")}},
-				{Value: &TypeValue{String: p("la")}},
-				{Value: &TypeValue{String: p("la")}},
-				{Value: &TypeValue{String: p("planete")}},
-			},
+			node: &Node{ScalarStrings: []string{
+				"hello",
+				"hello",
+				"hello",
+				"world",
+				"world",
+				"la",
+				"la",
+				"planete",
+			}},
 			topCount: 5,
-			want: &SummaryLeaf{
-				Strings: &StringSummaryLeaf{
+			want: &SummaryNode{
+				Strings: &StringSummaryNode{
 					Freq:   8,
 					Unique: 4,
 					MinLen: len("la"),
@@ -274,19 +275,19 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "more than top strings",
-			values: []*Leaf{
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("hello")}},
-				{Value: &TypeValue{String: p("world")}},
-				{Value: &TypeValue{String: p("world")}},
-				{Value: &TypeValue{String: p("la")}},
-				{Value: &TypeValue{String: p("la")}},
-				{Value: &TypeValue{String: p("planete")}},
-			},
+			node: &Node{ScalarStrings: []string{
+				"hello",
+				"hello",
+				"hello",
+				"world",
+				"world",
+				"la",
+				"la",
+				"planete",
+			}},
 			topCount: 2,
-			want: &SummaryLeaf{
-				Strings: &StringSummaryLeaf{
+			want: &SummaryNode{
+				Strings: &StringSummaryNode{
 					Freq:   8,
 					Unique: 4,
 					MinLen: len("la"),
@@ -306,29 +307,29 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "all same frequencies, by order of length",
-			values: []*Leaf{
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-				{Value: &TypeValue{String: p("bonjour")}},
-				{Value: &TypeValue{String: p("le")}},
-				{Value: &TypeValue{String: p("monde")}},
-			},
+			node: &Node{ScalarStrings: []string{
+				"bonjour",
+				"le",
+				"monde",
+				"bonjour",
+				"le",
+				"monde",
+				"bonjour",
+				"le",
+				"monde",
+				"bonjour",
+				"le",
+				"monde",
+				"bonjour",
+				"le",
+				"monde",
+				"bonjour",
+				"le",
+				"monde",
+			}},
 			topCount: 2,
-			want: &SummaryLeaf{
-				Strings: &StringSummaryLeaf{
+			want: &SummaryNode{
+				Strings: &StringSummaryNode{
 					Freq:   18,
 					Unique: 3,
 					MinLen: len("le"),
@@ -348,14 +349,14 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "bools",
-			values: []*Leaf{
-				{Value: &TypeValue{Bool: p(true)}},
-				{Value: &TypeValue{Bool: p(true)}},
-				{Value: &TypeValue{Bool: p(false)}},
-				{Value: &TypeValue{Bool: p(true)}},
-			},
-			want: &SummaryLeaf{
-				Bools: &BoolSummaryLeaf{
+			node: &Node{ScalarBools: []bool{
+				true,
+				true,
+				false,
+				true,
+			}},
+			want: &SummaryNode{
+				Bools: &BoolSummaryNode{
 					Freq:      4,
 					TrueFreq:  3,
 					FalseFreq: 1,
@@ -364,14 +365,9 @@ func TestSummaryLeaves(t *testing.T) {
 		},
 		{
 			name: "nulls",
-			values: []*Leaf{
-				{Value: &TypeValue{Null: p(struct{}{})}},
-				{Value: &TypeValue{Null: p(struct{}{})}},
-				{Value: &TypeValue{Null: p(struct{}{})}},
-				{Value: &TypeValue{Null: p(struct{}{})}},
-			},
-			want: &SummaryLeaf{
-				Nulls: &NullSummaryLeaf{
+			node: &Node{ScalarNulls: 4},
+			want: &SummaryNode{
+				Nulls: &NullSummaryNode{
 					Freq: 4,
 				},
 			},
@@ -379,12 +375,8 @@ func TestSummaryLeaves(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := summarizeLeaves(tt.values, tt.bucketCount, tt.topCount)
+			got := summarizeNode(tt.node, tt.bucketCount, tt.topCount)
 			require.Equal(t, tt.want, got)
 		})
 	}
-}
-
-func p[t any](v t) *t {
-	return &v
 }

@@ -2,6 +2,7 @@ package sumjson
 
 import (
 	"sort"
+	"strconv"
 
 	"github.com/aybabtme/flatjson"
 	"golang.org/x/exp/maps"
@@ -13,47 +14,40 @@ type Summary struct {
 
 type Reporter interface {
 	ObjectRead(from, to, total int)
+	Summarized(done, total int)
 }
 
 func Summarize(data []byte, reporter Reporter) (*Summary, error) {
 	summary := &Summary{Root: new(Node)}
+	leaves := 0
 	cb := &flatjson.Callbacks{
 		MaxDepth: 99,
 		OnNumber: func(prefixes flatjson.Prefixes, val flatjson.Number) {
 			name := val.Name.String(data)
 			summary.atKey(data, prefixes, name, func(node *Node) {
-				tval := &TypeValue{Number: &val.Value}
-				node.atLeaf(tval, func(l *Leaf) {
-					// do something?
-				})
+				leaves++
+				node.ScalarNumbers = append(node.ScalarNumbers, val.Value)
 			})
 		},
 		OnString: func(prefixes flatjson.Prefixes, val flatjson.String) {
 			name := val.Name.String(data)
 			summary.atKey(data, prefixes, name, func(node *Node) {
-				v := val.Value.String(data)
-				tval := &TypeValue{String: &v}
-				node.atLeaf(tval, func(l *Leaf) {
-					// do something?
-				})
+				leaves++
+				node.ScalarStrings = append(node.ScalarStrings, val.Value.String(data))
 			})
 		},
 		OnBoolean: func(prefixes flatjson.Prefixes, val flatjson.Bool) {
 			name := val.Name.String(data)
 			summary.atKey(data, prefixes, name, func(node *Node) {
-				tval := &TypeValue{Bool: &val.Value}
-				node.atLeaf(tval, func(l *Leaf) {
-					// do something?
-				})
+				leaves++
+				node.ScalarBools = append(node.ScalarBools, val.Value)
 			})
 		},
 		OnNull: func(prefixes flatjson.Prefixes, val flatjson.Null) {
 			name := val.Name.String(data)
 			summary.atKey(data, prefixes, name, func(node *Node) {
-				tval := &TypeValue{Null: &struct{}{}}
-				node.atLeaf(tval, func(l *Leaf) {
-					// do something?
-				})
+				leaves++
+				node.ScalarNulls++
 			})
 		},
 	}
@@ -71,6 +65,20 @@ func Summarize(data []byte, reporter Reporter) (*Summary, error) {
 		}
 		i = pos.To
 	}
+	leavesDone := 0
+	summary.Root.walk(func(n *Node) bool {
+		leavesDone++
+		n.Summarized = summarizeNode(n, 10, 5)
+
+		// don't encode individual values
+		n.ScalarNumbers = nil
+		n.ScalarStrings = nil
+		n.ScalarBools = nil
+		n.ScalarNulls = 0
+
+		reporter.Summarized(leavesDone, leaves)
+		return true
+	})
 	return summary, nil
 }
 
@@ -81,19 +89,38 @@ func (sum *Summary) atKey(data []byte, prefixes flatjson.Prefixes, key string, a
 func (sum *Summary) atKeyIter(parent *Node, data []byte, prefixes flatjson.Prefixes, key string, action func(node *Node)) {
 	if len(prefixes) != 0 {
 		next := prefixes[0]
-		nextKey := next.String(data)
-		for _, child := range parent.Children {
-			if child.Key == nextKey {
+		var child *Node
+		if next.IsObjectKey() {
+			nextKey := next.String(data)
+			for _, child := range parent.Children {
+				if child.Key == nextKey {
+					child.Freq++
+					sum.atKeyIter(child, data, prefixes[1:], key, action)
+					return
+				}
+			}
+			child = &Node{
+				Freq: 1,
+				Key:  nextKey,
+			}
+			parent.Children = append(parent.Children, child)
+		} else if next.IsArrayIndex() {
+			idx := next.Index()
+			switch {
+			case idx < len(parent.Elems)-1:
+				child = parent.Elems[idx]
 				child.Freq++
-				sum.atKeyIter(child, data, prefixes[1:], key, action)
-				return
+			case idx == len(parent.Elems)-1:
+				child = &Node{Freq: 1, Key: strconv.Itoa(idx)}
+				parent.Elems = append(parent.Elems, child)
+			case idx > len(parent.Elems)-1:
+				for i := len(parent.Elems); i < idx; i++ {
+					parent.Elems = append(parent.Elems, &Node{Freq: 0, Key: strconv.Itoa(i)})
+				}
+				child = &Node{Freq: 1, Key: strconv.Itoa(idx)}
+				parent.Elems = append(parent.Elems, child)
 			}
 		}
-		child := &Node{
-			Freq: 1,
-			Key:  nextKey,
-		}
-		parent.Children = append(parent.Children, child)
 		sum.atKeyIter(child, data, prefixes[1:], key, action)
 		return
 	}
@@ -110,100 +137,110 @@ func (sum *Summary) atKeyIter(parent *Node, data []byte, prefixes flatjson.Prefi
 		Freq: 1,
 		Key:  key,
 	}
+
 	parent.Children = append(parent.Children, child)
 	action(child)
 }
 
 type Node struct {
-	Key      string  `json:"k,omitempty"`
-	Children []*Node `json:"c,omitempty"`
+	Key      string  `json:"key,omitempty"`
+	Children []*Node `json:"objects,omitempty"`
+	Elems    []*Node `json:"arrays,omitempty"`
+
+	ScalarNumbers []float64 `json:"numbers,omitempty"`
+	ScalarStrings []string  `json:"strings,omitempty"`
+	ScalarBools   []bool    `json:"bools,omitempty"`
+	ScalarNulls   int       `json:"nulls,omitempty"`
 
 	// stats
-	Freq   int     `json:"n"`
-	Leaves []*Leaf `json:"lvs,omitempty"`
+	Freq       int          `json:"freq"`
+	Summarized *SummaryNode `json:"summary,omitempty"`
 }
 
-func (nd *Node) atLeaf(tval *TypeValue, action func(*Leaf)) {
-	for _, leaf := range nd.Leaves {
-		if leaf.Value.Equal(tval) {
-			leaf.Freq++
-			action(leaf)
-			return
+func (nd *Node) walk(eachNode func(*Node) bool) bool {
+	for _, ch := range nd.Children {
+		if !ch.walk(eachNode) {
+			return false
 		}
 	}
-	missLeaf := &Leaf{Freq: 1, Value: tval}
-	nd.Leaves = append(nd.Leaves, missLeaf)
-	action(missLeaf)
-}
-
-type Leaf struct {
-	Freq  int        `json:"n"`
-	Value *TypeValue `json:"v"`
-}
-
-type TypeValue struct {
-	Number *float64  `json:"f,omitempty"`
-	String *string   `json:"s,omitempty"`
-	Bool   *bool     `json:"b,omitempty"`
-	Null   *struct{} `json:"n,omitempty"`
-}
-
-func (tv *TypeValue) Equal(other *TypeValue) bool {
-	if tv.Number != nil && other.Number != nil {
-		return *tv.Number == *other.Number
-	}
-	if tv.String != nil && other.String != nil {
-		return *tv.String == *other.String
-	}
-	if tv.Bool != nil && other.Bool != nil {
-		return *tv.Bool == *other.Bool
-	}
-	return tv.Null != nil && other.Null != nil
-}
-
-type SummaryLeaf struct {
-	Numbers *NumberSummaryLeaf `json:"number,omitempty"`
-	Strings *StringSummaryLeaf `json:"string,omitempty"`
-	Bools   *BoolSummaryLeaf   `json:"bool,omitempty"`
-	Nulls   *NullSummaryLeaf   `json:"null,omitempty"`
-}
-
-func summarizeLeaves(leafs []*Leaf, bucketCount, topCount int) *SummaryLeaf {
-	var (
-		numbers []float64
-		strings []string
-		bools   []bool
-		nulls   int
-		summary = &SummaryLeaf{}
-	)
-	for _, leaf := range leafs {
-		switch {
-		case leaf.Value.Number != nil:
-			numbers = append(numbers, *leaf.Value.Number)
-		case leaf.Value.String != nil:
-			strings = append(strings, *leaf.Value.String)
-		case leaf.Value.Bool != nil:
-			bools = append(bools, *leaf.Value.Bool)
-		case leaf.Value.Null != nil:
-			nulls++
+	for _, ch := range nd.Elems {
+		if !ch.walk(eachNode) {
+			return false
 		}
 	}
-	if len(numbers) > 0 {
-		summary.Numbers = summarizeNumbers(numbers, bucketCount)
+	return eachNode(nd)
+}
+
+type SummaryNode struct {
+	Objects *ObjectSummaryNode `json:"object,omitempty"`
+	Arrays  *ArraySummaryNode  `json:"array,omitempty"`
+	Numbers *NumberSummaryNode `json:"number,omitempty"`
+	Strings *StringSummaryNode `json:"string,omitempty"`
+	Bools   *BoolSummaryNode   `json:"bool,omitempty"`
+	Nulls   *NullSummaryNode   `json:"null,omitempty"`
+}
+
+func summarizeNode(nd *Node, bucketCount, topCount int) *SummaryNode {
+	var summary = &SummaryNode{}
+	if len(nd.Children) > 0 {
+		summary.Objects = summarizeObjects(nd.Children)
 	}
-	if len(strings) > 0 {
-		summary.Strings = summarizeStrings(strings, topCount)
+	if len(nd.Elems) > 0 {
+		summary.Arrays = summarizeArrays(nd.Elems)
 	}
-	if len(bools) > 0 {
-		summary.Bools = summarizeBools(bools)
+	if len(nd.ScalarNumbers) > 0 {
+		summary.Numbers = summarizeNumbers(nd.ScalarNumbers, bucketCount)
 	}
-	if nulls > 0 {
-		summary.Nulls = &NullSummaryLeaf{Freq: nulls}
+	if len(nd.ScalarStrings) > 0 {
+		summary.Strings = summarizeStrings(nd.ScalarStrings, topCount)
+	}
+	if len(nd.ScalarBools) > 0 {
+		summary.Bools = summarizeBools(nd.ScalarBools)
+	}
+	if nd.ScalarNulls > 0 {
+		summary.Nulls = &NullSummaryNode{Freq: nd.ScalarNulls}
 	}
 	return summary
 }
 
-type NumberSummaryLeaf struct {
+type ObjectSummaryNode struct {
+	Keys []Key `json:"keys"`
+}
+
+type Key struct {
+	Name string `json:"key"`
+	Freq int    `json:"freq"`
+}
+
+func summarizeObjects(objs []*Node) *ObjectSummaryNode {
+	var ordered []string
+	keys := make(map[string]Key, 0)
+	for _, obj := range objs {
+		k, ok := keys[obj.Key]
+		if !ok {
+			k = Key{Name: obj.Key}
+			ordered = append(ordered, obj.Key)
+		}
+		k.Freq += obj.Freq
+		keys[obj.Key] = k
+	}
+	var out []Key
+	for _, k := range ordered {
+		out = append(out, keys[k])
+	}
+
+	return &ObjectSummaryNode{Keys: out}
+}
+
+type ArraySummaryNode struct {
+	Freq int `json:"freq"`
+}
+
+func summarizeArrays(elems []*Node) *ArraySummaryNode {
+	return &ArraySummaryNode{Freq: len(elems)}
+}
+
+type NumberSummaryNode struct {
 	Freq    int     `json:"freq"`
 	Unique  int     `json:"unique"`
 	AllInts bool    `json:"all_ints"`
@@ -213,8 +250,8 @@ type NumberSummaryLeaf struct {
 	Distribution []BucketRange `json:"distribution"`
 }
 
-func summarizeNumbers(numbers []float64, bucketCount int) *NumberSummaryLeaf {
-	out := &NumberSummaryLeaf{
+func summarizeNumbers(numbers []float64, bucketCount int) *NumberSummaryNode {
+	out := &NumberSummaryNode{
 		Freq:    len(numbers),
 		AllInts: isInt(numbers[0]), // assume until proven wrong
 		Unique:  1,
@@ -280,7 +317,7 @@ func isInt(v float64) bool {
 	return v == float64(int(v))
 }
 
-type StringSummaryLeaf struct {
+type StringSummaryNode struct {
 	Freq   int            `json:"freq"`
 	Unique int            `json:"unique"`
 	MinLen int            `json:"min_len"`
@@ -293,8 +330,8 @@ type StringSample struct {
 	Freq  int    `json:"freq"`
 }
 
-func summarizeStrings(strings []string, topCount int) *StringSummaryLeaf {
-	out := &StringSummaryLeaf{
+func summarizeStrings(strings []string, topCount int) *StringSummaryNode {
+	out := &StringSummaryNode{
 		Freq:   len(strings),
 		Unique: 1,
 		MinLen: len(strings[0]),
@@ -372,14 +409,14 @@ func isLonger(left, right string) bool {
 	return left > right
 }
 
-type BoolSummaryLeaf struct {
+type BoolSummaryNode struct {
 	Freq      int `json:"freq"`
 	TrueFreq  int `json:"trues"`
 	FalseFreq int `json:"falses"`
 }
 
-func summarizeBools(bools []bool) *BoolSummaryLeaf {
-	out := &BoolSummaryLeaf{
+func summarizeBools(bools []bool) *BoolSummaryNode {
+	out := &BoolSummaryNode{
 		Freq: len(bools),
 	}
 	for _, v := range bools {
@@ -392,6 +429,6 @@ func summarizeBools(bools []bool) *BoolSummaryLeaf {
 	return out
 }
 
-type NullSummaryLeaf struct {
+type NullSummaryNode struct {
 	Freq int `json:"freq"`
 }
